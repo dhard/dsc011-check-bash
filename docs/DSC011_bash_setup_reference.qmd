@@ -1,0 +1,206 @@
+---
+title: "DSC 011 S26 Lecture NN Demo (KEY)"
+subtitle: "Bash in Quarto — Setup Reference"
+author: "FirstName LastName"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+    embed-resources: true
+    # Inject CSS for stderr styling in rendered output
+    include-in-header:
+      text: |
+        <style>
+        /* Stdout: clean white background, no prefix */
+        pre.stdout {
+          background: #f8f8f8;
+          border-left: 3px solid #4caf50;
+          padding: 0.5em 1em;
+          margin-bottom: 0.2em;
+          font-family: monospace;
+          white-space: pre-wrap;
+        }
+        /* Stderr: light red tint, left border */
+        pre.stderr {
+          background: #fff3f3;
+          border-left: 3px solid #e53935;
+          color: #b71c1c;
+          padding: 0.5em 1em;
+          margin-top: 0.2em;
+          font-family: monospace;
+          white-space: pre-wrap;
+        }
+        /* CORRECT / INCORRECT result line */
+        .check-correct  { color: #2e7d32; font-weight: bold; }
+        .check-incorrect { color: #c62828; font-weight: bold; }
+        </style>
+execute:
+  echo: true
+  warning: false
+  message: false
+engine: knitr
+---
+
+```{r setup, include=FALSE, cache=FALSE, message=FALSE, warning=FALSE, results="hide"}
+
+# ── Standard R options ────────────────────────────────────────────────────────
+options(digits = 5)
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  cache   = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  collapse = TRUE,
+  comment = ""          # <── removes the ## prefix from ALL chunk output
+)
+
+# ── R print_and_check (unchanged from v2.2) ───────────────────────────────────
+print_and_check <- function(answer, checkstring) {
+  print(answer)
+  check <- ifelse(digest::digest(answer) == checkstring,
+                  "CORRECT",
+                  "INCORRECT")
+  print(check)
+}
+
+# ── Custom knitr engine: styled-bash ─────────────────────────────────────────
+# Captures stdout and stderr separately; renders them as styled HTML divs.
+# Students use this engine for bash chunks where visual stderr distinction
+# matters in the rendered HTML output.
+#
+# Usage in notebook:
+#   ```{styled-bash}
+#   ls /nonexistent 2>&1   # or let the engine split them
+#   ```
+#
+# For most chunks, plain ```{bash} is fine (comment="" already cleans it up).
+# Use styled-bash when you want the green/red border treatment in HTML.
+
+knitr::knit_engines$set(`styled-bash` = function(options) {
+  code <- paste(options$code, collapse = "\n")
+
+  # Run code, capturing stdout and stderr separately
+  tmp_out <- tempfile()
+  tmp_err <- tempfile()
+  on.exit({ unlink(tmp_out); unlink(tmp_err) })
+
+  # Execute via bash; redirect streams to temp files
+  exit_code <- system2(
+    "bash",
+    args  = c("-c", shQuote(code)),
+    stdout = tmp_out,
+    stderr = tmp_err
+  )
+
+  stdout_txt <- paste(readLines(tmp_out, warn = FALSE), collapse = "\n")
+  stderr_txt <- paste(readLines(tmp_err, warn = FALSE), collapse = "\n")
+
+  # Build HTML output
+  html_parts <- character(0)
+
+  if (nzchar(stdout_txt)) {
+    # Colorize CORRECT / INCORRECT lines in stdout
+    stdout_html <- stdout_txt
+    stdout_html <- gsub("^CORRECT$",   '<span class="check-correct">CORRECT</span>',
+                        stdout_html, perl = TRUE)
+    stdout_html <- gsub("^INCORRECT$", '<span class="check-incorrect">INCORRECT</span>',
+                        stdout_html, perl = TRUE)
+    html_parts <- c(html_parts,
+      paste0('<pre class="stdout">', stdout_html, '</pre>'))
+  }
+
+  if (nzchar(stderr_txt)) {
+    html_parts <- c(html_parts,
+      paste0('<pre class="stderr"><strong>[stderr]</strong>\n',
+             htmltools::htmlEscape(stderr_txt), '</pre>'))
+  }
+
+  html_out <- paste(html_parts, collapse = "\n")
+
+  # Return as raw HTML block (knitr asis output)
+  knitr::engine_output(options, options$code, out = list(
+    structure(list(src = html_out), class = c("knit_asis", "knit_asis_url"))
+  ))
+})
+```
+
+---
+
+## Bash Chunk Quick Reference
+
+### Pattern 1 — Plain bash chunk (comment="" fix is enough)
+
+The `comment = ""` in setup already removes the `##` prefix.
+Use plain `{bash}` for most demonstrations.
+
+```{bash}
+#| label: demo-plain-bash
+echo "The current date is: $(date)"
+wc -l /etc/hosts
+```
+
+### Pattern 2 — Pipe into check_bash
+
+```{bash}
+#| label: demo-pipe-check
+# Student pipes command output directly into check_bash
+echo "hello world" | check_bash "b94d27b9934d3e08a52e52d7da7dabfac484efe04681d8714cc940430e5fa9f"
+```
+
+### Pattern 3 — Capture then check
+
+```{bash}
+#| label: demo-capture-check
+answer=$(echo "hello world")
+check_bash "$answer" "b94d27b9934d3e08a52e52d7da7dabfac484efe04681d8714cc940430e5fa9f"
+```
+
+### File checking
+
+```{bash}
+#| label: demo-file-check
+# Student writes a file, then checks its contents
+echo "expected output" > /tmp/student_result.txt
+check_bash --file /tmp/student_result.txt "HASH_FROM_KEY_HERE"
+```
+
+### Normalized checking (whitespace-forgiving)
+
+```{bash}
+#| label: demo-normalize
+# Use -n when output may have variable spacing
+some_command | check_bash -n "HASH_FROM_KEY_HERE"
+```
+
+### Styled-bash engine (stderr visually distinguished)
+
+```{styled-bash}
+#| label: demo-stderr
+ls /this/does/not/exist
+echo "This goes to stdout"
+```
+
+---
+
+## Instructor Key Generation Patterns
+
+```{bash}
+#| label: key-gen-examples
+#| eval: false   # Set eval: true temporarily when generating keys
+
+# Generate hash for a command's stdout:
+echo "hello world" | check_bash --make-key
+
+# Generate hash for a file:
+check_bash --file expected_output.csv --make-key
+
+# Generate hash for a captured value:
+answer=$(wc -l < /etc/hosts)
+check_bash --make-key "$answer"
+
+# Normalized hash (must match student-side -n flag):
+some_command | check_bash -n --make-key
+```

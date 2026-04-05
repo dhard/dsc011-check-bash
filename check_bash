@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# =============================================================================
+# check_bash  —  DSC 011 answer-checking tool for bash chunks in Quarto
+# Version: 2.1
+# Compatible: macOS (shasum), Linux/WSL2 (sha256sum)
+# =============================================================================
+#
+# USAGE
+#   Output checking (pipe pattern):
+#     some_command | check_bash [options] <HASH>
+#     some_command | check_bash --make-key
+#
+#   Output checking (capture pattern):
+#     answer=$(some_command)
+#     check_bash [options] "$answer" <HASH>
+#     check_bash --make-key "$answer"
+#
+#   File checking:
+#     check_bash --file output.csv <HASH>
+#     check_bash --file output.csv --make-key
+#
+#   Code structure checking only:
+#     check_bash --code "$MY_CODE" --requires grep --pipeline 3 --forbid cat
+#
+#   Combined output + code structure:
+#     MY_CODE='ls -la | grep txt | wc -l'
+#     eval "$MY_CODE" | check_bash --code "$MY_CODE" \
+#       --requires grep --requires wc --forbid cat --pipeline 3 \
+#       "OUTPUT_HASH"
+#
+#   Multi-line combined (heredoc):
+#     MY_CODE=$(cat <<'EOF'
+#     find . -name "*.csv" | xargs grep "Merced" | wc -l
+#     EOF
+#     )
+#     eval "$MY_CODE" | check_bash --code "$MY_CODE" \
+#       --requires find --requires grep --requires wc --pipeline 3 \
+#       "OUTPUT_HASH"
+#
+# OUTPUT CHECK OPTIONS
+#   -n, --normalize        Strip/normalize whitespace before hashing stdout.
+#   -f, --file <path>      Hash raw bytes of a file instead of stdout.
+#   -q, --quiet            Suppress printing the answer value.
+#
+# CODE STRUCTURE OPTIONS
+#   -c, --code <string>    The student code to analyze (required for all
+#                          code structure checks below).
+#   -r, --requires <cmd>   Command that must appear in the code. Repeatable.
+#   -F, --forbid  <cmd>    Command that must NOT appear in the code. Repeatable.
+#   -p, --pipeline <N>     Code must have exactly N pipeline stages.
+#   --pipeline-min <N>     Pipeline must have at least N stages.
+#   --pipeline-max <N>     Pipeline must have at most N stages.
+#   --requires-flag <f>    Flag/option that must appear (e.g. "-r"). Repeatable.
+#   --forbid-flag   <f>    Flag/option that must NOT appear. Repeatable.
+#
+# GENERAL
+#   -h, --help             Show this help.
+#   -V, --version          Print version and exit.
+#
+# INSTRUCTOR ONLY
+#   -k, --make-key         Print the SHA-256 hash for use in KEY notebooks.
+#                          Students should never need this flag.
+# =============================================================================
+
+VERSION="2.1"
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+_sha256() {
+    if command -v sha256sum &>/dev/null; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum &>/dev/null; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        echo "ERROR: No SHA-256 tool found. Install coreutils (brew / apt)." >&2
+        exit 1
+    fi
+}
+
+_normalize() {
+    tr -s '[:space:]' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Strip shell comments and flatten continuation lines before analysis.
+_strip_comments() {
+    sed 's/#[^"'\'']*$//' | tr -d '\\\n' | tr -s ' \t' ' '
+}
+
+# Count top-level pipeline stages (pipes inside $(...) or quotes excluded).
+_count_pipeline_stages() {
+    local code="$1"
+    local pipes=0 depth=0 in_single=0 in_double=0
+    local i char prev=""
+
+    for (( i=0; i<${#code}; i++ )); do
+        char="${code:$i:1}"
+
+        if [[ "$char" == "'" && "$in_double" -eq 0 ]]; then
+            (( in_single = 1 - in_single )); prev="$char"; continue
+        fi
+        [[ "$in_single" -eq 1 ]] && { prev="$char"; continue; }
+
+        if [[ "$char" == '"' && "$prev" != '\' ]]; then
+            (( in_double = 1 - in_double )); prev="$char"; continue
+        fi
+        [[ "$in_double" -eq 1 ]] && { prev="$char"; continue; }
+
+        if [[ "$char" == '(' && "$prev" == '$' ]]; then
+            (( depth++ )); prev="$char"; continue
+        fi
+        if [[ "$char" == ')' && "$depth" -gt 0 ]]; then
+            (( depth-- )); prev="$char"; continue
+        fi
+
+        if [[ "$char" == '|' && "$depth" -eq 0 ]]; then
+            next="${code:$(( i+1 )):1}"
+            if [[ "$next" != '|' && "$prev" != '|' ]]; then
+                (( pipes++ ))
+            fi
+        fi
+        prev="$char"
+    done
+
+    echo $(( pipes + 1 ))
+}
+
+# Extract bare command tokens from stripped code.
+_extract_commands() {
+    local code="$1"
+    echo "$code" \
+      | tr '|;&()' ' ' \
+      | tr -s ' \t\n' '\n' \
+      | grep -Ev '^[-$=<>{}]' \
+      | grep -Ev '^[A-Z_a-z][A-Z_a-z0-9]*=' \
+      | grep -Ev '^(if|then|else|elif|fi|for|do|done|while|until|case|esac|in|function|return|local|export|echo|printf|read|true|false)$' \
+      | grep -v '^$' || true
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+NORMALIZE=false
+FILE_MODE=false
+FILE_PATH=""
+MAKE_KEY=false
+QUIET=false
+CODE=""
+REQUIRES=()
+FORBIDS=()
+PIPELINE_EXACT=""
+PIPELINE_MIN=""
+PIPELINE_MAX=""
+REQUIRED_FLAGS=()
+FORBIDDEN_FLAGS=()
+POSITIONAL=()
+
+# Result signals — use emoji for visual clarity in terminals and rendered HTML.
+SIG_PASS="✓"
+SIG_FAIL="✗"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--normalize)       NORMALIZE=true; shift ;;
+        -f|--file)            FILE_MODE=true; FILE_PATH="$2"; shift 2 ;;
+        -k|--make-key)        MAKE_KEY=true; shift ;;
+        -q|--quiet)           QUIET=true; shift ;;
+        -c|--code)            CODE="$2"; shift 2 ;;
+        -r|--requires)        REQUIRES+=("$2"); shift 2 ;;
+        -F|--forbid)          FORBIDS+=("$2"); shift 2 ;;
+        -p|--pipeline)        PIPELINE_EXACT="$2"; shift 2 ;;
+        --pipeline-min)       PIPELINE_MIN="$2"; shift 2 ;;
+        --pipeline-max)       PIPELINE_MAX="$2"; shift 2 ;;
+        --requires-flag)      REQUIRED_FLAGS+=("$2"); shift 2 ;;
+        --forbid-flag)        FORBIDDEN_FLAGS+=("$2"); shift 2 ;;
+        -V|--version)         echo "check_bash $VERSION"; exit 0 ;;
+        -h|--help)
+            sed -n '/^# USAGE/,/^# ===*/p' "$0" \
+              | grep -v '^# ===*' | sed 's/^# \?//'
+            exit 0 ;;
+        --) shift; POSITIONAL+=("$@"); break ;;
+        -*) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
+        *)  POSITIONAL+=("$1"); shift ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Determine which modes are active
+# ---------------------------------------------------------------------------
+CODE_CHECK_REQUESTED=false
+if [[ -n "$CODE" ]]; then
+    if [[ ${#REQUIRES[@]} -gt 0 ]]       || \
+       [[ ${#FORBIDS[@]} -gt 0 ]]        || \
+       [[ -n "$PIPELINE_EXACT" ]]        || \
+       [[ -n "$PIPELINE_MIN" ]]          || \
+       [[ -n "$PIPELINE_MAX" ]]          || \
+       [[ ${#REQUIRED_FLAGS[@]} -gt 0 ]] || \
+       [[ ${#FORBIDDEN_FLAGS[@]} -gt 0 ]]; then
+        CODE_CHECK_REQUESTED=true
+    fi
+fi
+
+OUTPUT_CHECK_REQUESTED=false
+if [[ ${#POSITIONAL[@]} -gt 0 ]] || [[ "$MAKE_KEY" == true ]] || [[ "$FILE_MODE" == true ]]; then
+    OUTPUT_CHECK_REQUESTED=true
+fi
+
+CODE_ONLY_MODE=false
+if [[ "$CODE_CHECK_REQUESTED" == true && "$OUTPUT_CHECK_REQUESTED" == false ]]; then
+    CODE_ONLY_MODE=true
+fi
+
+# ---------------------------------------------------------------------------
+# Code structure check runner — sets CODE_PASS, prints per-rule detail
+# ---------------------------------------------------------------------------
+CODE_PASS=false
+
+_run_code_checks() {
+    local code="$1"
+    local all_pass=true
+
+    local stripped
+    stripped=$(printf '%s' "$code" | _strip_comments)
+
+    local actual_stages
+    actual_stages=$(_count_pipeline_stages "$stripped")
+
+    local cmds
+    cmds=$(_extract_commands "$stripped")
+
+    # Helper: emit one rule result line with emoji signal
+    _rule() {
+        local sig="$1" msg="$2"
+        printf '  %s %s\n' "$sig" "$msg"
+    }
+
+    # Required commands
+    if [[ ${#REQUIRES[@]} -gt 0 ]]; then
+        for cmd in "${REQUIRES[@]}"; do
+            if printf '%s\n' "$cmds" | grep -qxF "$cmd"; then
+                _rule "$SIG_PASS" "requires '$cmd'"
+            else
+                _rule "$SIG_FAIL" "requires '$cmd' — not found in code"
+                all_pass=false
+            fi
+        done
+    fi
+
+    # Forbidden commands
+    if [[ ${#FORBIDS[@]} -gt 0 ]]; then
+        for cmd in "${FORBIDS[@]}"; do
+            if printf '%s\n' "$cmds" | grep -qxF "$cmd"; then
+                _rule "$SIG_FAIL" "forbids '$cmd' — found in code"
+                all_pass=false
+            else
+                _rule "$SIG_PASS" "forbids '$cmd'"
+            fi
+        done
+    fi
+
+    # Required flags
+    if [[ ${#REQUIRED_FLAGS[@]} -gt 0 ]]; then
+        for flag in "${REQUIRED_FLAGS[@]}"; do
+            if printf '%s' "$stripped" | grep -qF -- "$flag"; then
+                _rule "$SIG_PASS" "requires flag '$flag'"
+            else
+                _rule "$SIG_FAIL" "requires flag '$flag' — not found"
+                all_pass=false
+            fi
+        done
+    fi
+
+    # Forbidden flags
+    if [[ ${#FORBIDDEN_FLAGS[@]} -gt 0 ]]; then
+        for flag in "${FORBIDDEN_FLAGS[@]}"; do
+            if printf '%s' "$stripped" | grep -qF -- "$flag"; then
+                _rule "$SIG_FAIL" "forbids flag '$flag' — found in code"
+                all_pass=false
+            else
+                _rule "$SIG_PASS" "forbids flag '$flag'"
+            fi
+        done
+    fi
+
+    # Exact pipeline length
+    if [[ -n "$PIPELINE_EXACT" ]]; then
+        if [[ "$actual_stages" -eq "$PIPELINE_EXACT" ]]; then
+            _rule "$SIG_PASS" "pipeline has exactly $PIPELINE_EXACT stage(s)"
+        else
+            _rule "$SIG_FAIL" "pipeline has $actual_stages stage(s), expected exactly $PIPELINE_EXACT"
+            all_pass=false
+        fi
+    fi
+
+    # Pipeline min
+    if [[ -n "$PIPELINE_MIN" ]]; then
+        if [[ "$actual_stages" -ge "$PIPELINE_MIN" ]]; then
+            _rule "$SIG_PASS" "pipeline has >= $PIPELINE_MIN stage(s) (found $actual_stages)"
+        else
+            _rule "$SIG_FAIL" "pipeline has $actual_stages stage(s), need at least $PIPELINE_MIN"
+            all_pass=false
+        fi
+    fi
+
+    # Pipeline max
+    if [[ -n "$PIPELINE_MAX" ]]; then
+        if [[ "$actual_stages" -le "$PIPELINE_MAX" ]]; then
+            _rule "$SIG_PASS" "pipeline has <= $PIPELINE_MAX stage(s) (found $actual_stages)"
+        else
+            _rule "$SIG_FAIL" "pipeline has $actual_stages stage(s), need at most $PIPELINE_MAX"
+            all_pass=false
+        fi
+    fi
+
+    [[ "$all_pass" == true ]] && CODE_PASS=true || CODE_PASS=false
+}
+
+# ---------------------------------------------------------------------------
+# --make-key for code structure spec (no hash — rules are the spec)
+# ---------------------------------------------------------------------------
+if [[ "$MAKE_KEY" == true && "$CODE_CHECK_REQUESTED" == true \
+      && "$OUTPUT_CHECK_REQUESTED" == false ]]; then
+    echo "# Code structure spec — paste --code checks into KEY notebook:"
+    for cmd  in "${REQUIRES[@]}";       do printf '  --requires %s\n'      "$cmd";  done
+    for cmd  in "${FORBIDS[@]}";        do printf '  --forbid %s\n'        "$cmd";  done
+    for flag in "${REQUIRED_FLAGS[@]}"; do printf '  --requires-flag %s\n' "$flag"; done
+    for flag in "${FORBIDDEN_FLAGS[@]}";do printf '  --forbid-flag %s\n'   "$flag"; done
+    [[ -n "$PIPELINE_EXACT" ]] && printf '  --pipeline %s\n'     "$PIPELINE_EXACT"
+    [[ -n "$PIPELINE_MIN"   ]] && printf '  --pipeline-min %s\n' "$PIPELINE_MIN"
+    [[ -n "$PIPELINE_MAX"   ]] && printf '  --pipeline-max %s\n' "$PIPELINE_MAX"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# CODE-ONLY MODE
+# ---------------------------------------------------------------------------
+if [[ "$CODE_ONLY_MODE" == true ]]; then
+    if [[ "$QUIET" == false ]]; then
+        echo "[code]"
+        printf '%s\n' "$CODE"
+        echo ""
+    fi
+    _run_code_checks "$CODE"
+    echo ""
+    if [[ "$CODE_PASS" == true ]]; then
+        echo "$SIG_PASS CORRECT"
+        exit 0
+    else
+        echo "$SIG_FAIL INCORRECT"
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# FILE MODE
+# ---------------------------------------------------------------------------
+if [[ "$FILE_MODE" == true ]]; then
+    [[ ! -f "$FILE_PATH" ]] && { echo "ERROR: File not found: $FILE_PATH" >&2; exit 1; }
+
+    COMPUTED=$(cat "$FILE_PATH" | _sha256)
+
+    if [[ "$MAKE_KEY" == true ]]; then
+        echo "$COMPUTED"; exit 0
+    fi
+
+    EXPECTED="${POSITIONAL[0]:-}"
+    [[ -z "$EXPECTED" ]] && { echo "ERROR: Expected hash argument missing." >&2; exit 1; }
+
+    if [[ "$QUIET" == false ]]; then
+        echo "[file: $FILE_PATH]"
+        echo "SHA-256: $COMPUTED"
+    fi
+
+    OUTPUT_PASS=false
+    [[ "$COMPUTED" == "$EXPECTED" ]] && OUTPUT_PASS=true
+
+    if [[ "$CODE_CHECK_REQUESTED" == true ]]; then
+        echo ""
+        _run_code_checks "$CODE"
+        echo ""
+        [[ "$OUTPUT_PASS" == true ]] && echo "Output: $SIG_PASS CORRECT" || echo "Output: $SIG_FAIL INCORRECT"
+        [[ "$CODE_PASS"   == true ]] && echo "Code:   $SIG_PASS CORRECT" || echo "Code:   $SIG_FAIL INCORRECT"
+        [[ "$OUTPUT_PASS" == true && "$CODE_PASS" == true ]] && exit 0 || exit 1
+    else
+        if [[ "$OUTPUT_PASS" == true ]]; then
+            echo "$SIG_PASS CORRECT"; exit 0
+        else
+            echo "$SIG_FAIL INCORRECT"; exit 1
+        fi
+    fi
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# STDOUT / STRING MODE — resolve INPUT and EXPECTED
+# ---------------------------------------------------------------------------
+if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+    if [[ "$MAKE_KEY" == true ]]; then
+        INPUT=$(cat)
+        if [[ "$NORMALIZE" == true ]]; then
+            printf '%s' "$INPUT" | _normalize | _sha256
+        else
+            printf '%s' "$INPUT" | _sha256
+        fi
+        exit 0
+    else
+        echo "ERROR: No hash argument and not in --make-key mode." >&2; exit 1
+    fi
+
+elif [[ ${#POSITIONAL[@]} -eq 1 ]]; then
+    # --make-key with a single positional arg: treat it as the value string.
+    # This handles: check_bash --make-key ""  and  check_bash --make-key "some value"
+    # regardless of whether stdin is a tty or subshell (avoids -t 0 unreliability).
+    if [[ "$MAKE_KEY" == true ]]; then
+        INPUT="${POSITIONAL[0]}"
+        if [[ "$NORMALIZE" == true ]]; then
+            printf '%s' "$INPUT" | _normalize | _sha256
+        else
+            printf '%s' "$INPUT" | _sha256
+        fi
+        exit 0
+    fi
+    # Without --make-key: one positional arg is the expected hash; input comes from pipe.
+    # Use -t 0 as a best-effort check, but also handle the case where stdin is closed.
+    if [[ -t 0 ]]; then
+        echo "ERROR: One argument with no pipe — need value + hash, or use --make-key." >&2
+        exit 1
+    else
+        INPUT=$(cat)
+        EXPECTED="${POSITIONAL[0]}"
+    fi
+
+elif [[ ${#POSITIONAL[@]} -ge 2 ]]; then
+    INPUT="${POSITIONAL[0]}"
+    EXPECTED="${POSITIONAL[1]}"
+fi
+
+# ---------------------------------------------------------------------------
+# Compute output hash
+# ---------------------------------------------------------------------------
+if [[ "$NORMALIZE" == true ]]; then
+    COMPUTED=$(printf '%s' "$INPUT" | _normalize | _sha256)
+else
+    COMPUTED=$(printf '%s' "$INPUT" | _sha256)
+fi
+
+if [[ "$MAKE_KEY" == true ]]; then
+    echo "$COMPUTED"; exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Print answer
+# ---------------------------------------------------------------------------
+[[ "$QUIET" == false ]] && printf '%s\n' "$INPUT"
+
+OUTPUT_PASS=false
+[[ "$COMPUTED" == "$EXPECTED" ]] && OUTPUT_PASS=true
+
+# ---------------------------------------------------------------------------
+# Combined output + code check
+# ---------------------------------------------------------------------------
+if [[ "$CODE_CHECK_REQUESTED" == true ]]; then
+    echo ""
+    _run_code_checks "$CODE"
+    echo ""
+    [[ "$OUTPUT_PASS" == true ]] && echo "Output: $SIG_PASS CORRECT" || echo "Output: $SIG_FAIL INCORRECT"
+    [[ "$CODE_PASS"   == true ]] && echo "Code:   $SIG_PASS CORRECT" || echo "Code:   $SIG_FAIL INCORRECT"
+    [[ "$OUTPUT_PASS" == true && "$CODE_PASS" == true ]] && exit 0 || exit 1
+else
+    if [[ "$OUTPUT_PASS" == true ]]; then
+        echo "$SIG_PASS CORRECT"; exit 0
+    else
+        echo "$SIG_FAIL INCORRECT"; exit 1
+    fi
+fi

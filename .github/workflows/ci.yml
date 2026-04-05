@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-ubuntu:
+    name: Test on Ubuntu (WSL2 proxy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make scripts executable
+        run: chmod +x check_bash test_check_bash.sh
+
+      - name: Verify sha256sum available
+        run: sha256sum --version
+
+      - name: Run test suite
+        run: bash test_check_bash.sh ./check_bash
+
+  test-macos:
+    name: Test on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make scripts executable
+        run: chmod +x check_bash test_check_bash.sh
+
+      - name: Verify shasum available
+        run: shasum --version
+
+      - name: Run test suite
+        run: bash test_check_bash.sh ./check_bash
+
+  shellcheck:
+    name: ShellCheck static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint check_bash
+        run: shellcheck -S warning check_bash
+
+      - name: Lint install_check_bash.sh
+        run: shellcheck -S warning install_check_bash.sh
+
+      - name: Lint test_check_bash.sh
+        run: shellcheck -S warning test_check_bash.sh
