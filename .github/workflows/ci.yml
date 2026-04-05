@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   test-ubuntu:
@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Make scripts executable
-        run: chmod +x check_bash test_check_bash.sh
+        run: chmod +x check_bash test_check_bash.sh install_check_bash.sh
 
       - name: Verify sha256sum available
         run: sha256sum --version
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Make scripts executable
-        run: chmod +x check_bash test_check_bash.sh
+        run: chmod +x check_bash test_check_bash.sh install_check_bash.sh
 
       - name: Verify shasum available
         run: shasum --version
