@@ -7,14 +7,14 @@
 #   bash install_check_bash.sh
 #
 # Or install directly without downloading this file first:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/dhard/dsc011-check-bash/main/install_check_bash.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/dhard/check-bash-install-test/main/install_check_bash.sh)
 # =============================================================================
 
 set -euo pipefail
 
 INSTALL_DIR="$HOME/bin"
 SCRIPT_NAME="check_bash"
-SCRIPT_URL="https://raw.githubusercontent.com/dhard/dsc011-check-bash/main/check_bash"
+SCRIPT_URL="https://raw.githubusercontent.com/dhard/check-bash-install-test/main/check_bash"
 
 # ---------------------------------------------------------------------------
 # Create ~/bin if it doesn't exist
