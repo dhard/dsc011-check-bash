@@ -181,7 +181,57 @@ eval "$MY_CODE" | check_bash --code "$MY_CODE" --requires grep "HASH" \
 Prior to v2.1 the script always exited 0, which made scripted use
 impossible.
 
-### 11. `--make-key` is instructor-only
+### 12. knitr bash chunk PATH problem on macOS
+
+**Problem:** RStudio launched from the Dock inherits a minimal PATH from
+`launchd` that does not include `/opt/homebrew/bin`. knitr bash chunks
+therefore invoke `/bin/bash` 3.2 (Apple's GPL-frozen version) even if the
+student correctly installed Homebrew bash 5 and set up their terminal PATH.
+
+**Four layered fixes** are applied together — each is a safety net for the
+ones before it:
+
+**Fix 1 — Launch RStudio from the terminal (student habit):**
+```bash
+open -a RStudio
+```
+RStudio inherits the terminal's PATH including `/opt/homebrew/bin`. Good
+practice regardless of other fixes.
+
+**Fix 2 — PATH patch in the R setup chunk (notebook-level):**
+```r
+homebrew_paths <- c("/opt/homebrew/bin", "/usr/local/bin")
+existing <- homebrew_paths[dir.exists(homebrew_paths)]
+if (length(existing) > 0) {
+  Sys.setenv(PATH = paste(c(existing, Sys.getenv("PATH")), collapse = ":"))
+}
+```
+Patches PATH inside the R session so knitr passes the correct PATH to bash
+chunks. Safe on Linux/WSL2 — non-existent paths are ignored.
+
+**Fix 3 — bash version guard chunk (notebook-level):**
+A bash chunk immediately after setup that checks `${BASH_VERSINFO[0]}` and
+exits with a clear error message if bash < 4. Uses only bash 3.2-compatible
+syntax so it runs even before the problem is resolved.
+
+**Fix 4 — /etc/paths.d/ entry (system-wide, permanent):**
+```bash
+echo /opt/homebrew/bin | sudo tee /etc/paths.d/homebrew
+```
+`path_helper` reads `/etc/paths.d/` at login and prepends entries to PATH
+for ALL processes including GUI apps. This is the most robust fix and
+persists across restarts. Requires `sudo`. Applied once during student
+system setup. This is taught as a sysadmin concept in DSC 011 — students
+learn what `/etc/paths.d/` is, how `path_helper` works, and why GUI apps
+don't see shell configuration files.
+
+WSL2/Ubuntu users do not need any of these fixes — Ubuntu ships bash 5.x
+and RStudio inherits the correct PATH automatically.
+
+All four fixes are documented with student-facing instructions in
+`docs/DSC011_bash_setup_reference.qmd`.
+
+### 13. `--make-key` is instructor-only
 
 The `--make-key` flag is listed under "INSTRUCTOR ONLY" in the `--help`
 output. Students should never need it. It generates the SHA-256 hash for
@@ -331,6 +381,7 @@ separate repository. The two systems share:
 - SHA-256 as the hash algorithm
 - The "enter once, check twice" design principle
 - `✓ CORRECT` / `✗ INCORRECT` as the result vocabulary
+
 
 ---
 
