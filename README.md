@@ -2,107 +2,263 @@
 
 [![CI](https://github.com/dhard/dsc011-check-bash/actions/workflows/ci.yml/badge.svg)](https://github.com/dhard/dsc011-check-bash/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Platform: macOS | Linux | WSL2](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL2-blue)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20WSL2%2FLinux-blue)](#installation)
 
-`check_bash` is a lightweight bash script for immediate answer feedback in
-Quarto and RStudio notebooks. It is the bash equivalent of the `print_and_check`
-system used for R chunks in DSC 011 at UC Merced. Students write a command or
-pipeline once, execute it, and receive an immediate `CORRECT` or `INCORRECT`
-based on a SHA-256 hash embedded in the notebook by the instructor.
+**`check_bash`** is a SHA-256–based answer-checking tool for bash code chunks
+in [Quarto](https://quarto.org) notebooks. It was developed for
+[DSC 011: Computing and Statistical Programming](https://github.com/dhard)
+at UC Merced to give students immediate feedback on both the **output** of
+their shell commands and the **structure** of their code (required commands,
+pipeline depth, flags used).
 
-It supports:
-- **Output checking** — hash-verify stdout from any command or pipeline
-- **File checking** — hash-verify raw bytes of any file a student writes
-- **Code structure checking** — verify required commands, forbidden commands,
-  pipeline length, and required/forbidden flags
-- **Combined checking** — output and code structure in a single call
+It is the bash companion to the R-based `print_and_check` / `dsc011_check`
+system used in the same course.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [Recommended — clone and install with just](#recommended--clone-and-install-with-just)
+  - [Quick install — no clone needed](#quick-install--no-clone-needed)
+  - [Verify your install](#verify-your-install)
+- [Typical workflow](#typical-workflow)
+- [Usage](#usage)
+  - [Pattern 1 — pipe](#pattern-1--pipe)
+  - [Pattern 2 — capture](#pattern-2--capture)
+  - [Pattern 3 — file checking](#pattern-3--file-checking)
+  - [Pattern 4 — code structure only](#pattern-4--code-structure-only)
+  - [Pattern 5 — combined output + code](#pattern-5--combined-output--code)
+- [Quarto / RStudio Integration](#quarto--rstudio-integration)
+- [Instructor Key Generation](#instructor-key-generation)
+- [All Options](#all-options)
+- [Just Recipes](#just-recipes)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Features
+
+- **Output checking** — hash-verify the stdout of any command or pipeline
+- **File checking** — hash-verify the byte contents of any output file
+- **Code structure checking** — enforce required commands, forbidden commands,
+  required or forbidden flags/options, and exact or bounded pipeline depth
+- **Combined checking** — one call checks both output correctness and code
+  structure, with separate labeled result lines
+- **Instructor key generation** — `--make-key` flag produces hashes to paste
+  into KEY notebooks; no separate tool needed
+- **Cross-platform** — auto-detects `sha256sum` (Linux/WSL2) and
+  `shasum -a 256` (macOS); produces identical hashes on both
+- **Whitespace normalization** — optional `-n` flag for forgiving matching
+- **Injection-safe** — `--code` strings are analyzed as text, never executed
+- **Zero runtime dependencies** — pure bash, requires only coreutils
+
+---
+
+## Prerequisites
+
+**Required:**
+
+| Tool | macOS | WSL2/Ubuntu |
+|------|-------|-------------|
+| `just` | `brew install just` | `sudo apt install just` |
+| bash 5+ | `brew install bash` | included |
+
+**Optional** (only needed for `just check`):
+
+| Tool | macOS | WSL2/Ubuntu |
+|------|-------|-------------|
+| `shellcheck` | `brew install shellcheck` | `sudo apt install shellcheck` |
+
+**macOS only — one-time system setup:**
+
+RStudio launched from the Dock does not see Homebrew's PATH. Fix this once:
+
+```bash
+echo /opt/homebrew/bin | sudo tee /etc/paths.d/homebrew
+```
+
+Then restart your Mac. See [Quarto / RStudio Integration](#quarto--rstudio-integration)
+for details.
 
 ---
 
 ## Installation
 
-### Students: one-time setup
-
-Open a Terminal (macOS) or WSL2 bash shell (Windows 11) and run:
+### Recommended — clone and install with just
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/dhard/dsc011-check-bash/main/install_check_bash.sh)
+git clone https://github.com/dhard/dsc011-check-bash.git
+cd dsc011-check-bash
+just install-system    # installs to /usr/local/bin, prompts for sudo if needed
 ```
 
-This will:
-1. Create `~/bin/` if it does not exist
-2. Download `check_bash` into `~/bin/`
-3. Add `~/bin` to your `PATH` in `.bashrc`, `.zshrc`, or `.bash_profile`
-4. Run a smoke test to confirm the installation works
-
-After installation, open a new terminal window (or run `source ~/.bashrc`) and
-verify with:
+Or to install without sudo to `~/bin`:
 
 ```bash
-check_bash --help
+just install
 ```
 
-### Instructors: manual installation
+To remove a previous install before switching locations:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dhard/dsc011-check-bash/main/check_bash \
-  -o ~/bin/check_bash
-chmod +x ~/bin/check_bash
+just uninstall         # removes from ~/bin and/or /usr/local/bin
+just install-system    # then install to system
+```
+
+### Quick install — no clone needed
+
+If you just want `check_bash` without cloning the repo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dhard/dsc011-check-bash/main/install_check_bash.sh | bash
+```
+
+This installs to `~/bin` and adds it to your PATH automatically.
+
+For a system install via curl:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dhard/dsc011-check-bash/main/install_check_bash.sh | bash -s -- --system
+```
+
+### Verify your install
+
+```bash
+check_bash --version      # check_bash 2.2
+echo "hello" | check_bash --make-key   # prints a 64-char hex string
 ```
 
 ---
 
-## Quick Start
-
-### Output checking — pipe pattern
+## Typical workflow
 
 ```bash
-ls /tmp | wc -l | check_bash "HASH_FROM_INSTRUCTOR"
+# Install just and clone the repo
+brew install just                          # macOS
+sudo apt install just                      # WSL2/Ubuntu
+
+git clone https://github.com/dhard/dsc011-check-bash.git
+cd dsc011-check-bash
+
+# Read the docs in your terminal
+glow README.md
+
+# Remove any previous install
+just uninstall
+
+# Run the test suite to verify everything works
+just test
+
+# Install system-wide
+just install-system
+check_bash --version
 ```
 
-### Output checking — capture pattern
+---
+
+## Usage
+
+### Pattern 1 — pipe
+
+Pipe command output directly into `check_bash`:
 
 ```bash
-answer=$(ls /tmp | wc -l)
-check_bash "$answer" "HASH_FROM_INSTRUCTOR"
+some_command | check_bash <HASH>
 ```
 
-### Code structure checking
+Example:
 
 ```bash
-MY_CODE='ls /tmp | grep ".txt" | wc -l'
+wc -l /etc/hosts | check_bash "a3f2..."
+```
+
+Output:
+
+```
+      12 /etc/hosts
+✓ CORRECT
+```
+
+---
+
+### Pattern 2 — capture
+
+Assign output to a variable, then check it. This mirrors the R
+`answer <- ...; print_and_check(answer, "hash")` pattern:
+
+```bash
+answer=$(some_command)
+check_bash "$answer" <HASH>
+```
+
+Example:
+
+```bash
+answer=$(wc -l < /etc/hosts)
+check_bash "$answer" "a3f2..."
+```
+
+---
+
+### Pattern 3 — file checking
+
+Check the raw byte contents of a file:
+
+```bash
+check_bash --file <path> <HASH>
+```
+
+Example:
+
+```bash
+grep "Merced" data.csv > results.txt
+check_bash --file results.txt "b7c9..."
+```
+
+Output:
+
+```
+[file: results.txt]
+SHA-256: b7c9...
+✓ CORRECT
+```
+
+---
+
+### Pattern 4 — code structure only
+
+Check that student code uses required tools and pipeline structure, without
+checking output. Useful when output is non-deterministic but the approach
+must be specific:
+
+```bash
+MY_CODE='cat data.csv | grep "Merced" | wc -l'
 check_bash --code "$MY_CODE" \
   --requires grep \
+  --requires wc \
   --forbid awk \
   --pipeline 3
 ```
 
-### Combined: output + code structure in one call
-
-```bash
-MY_CODE='ls /tmp | grep ".txt" | wc -l'
-eval "$MY_CODE" | check_bash \
-  --code "$MY_CODE" \
-  --requires grep \
-  --forbid awk \
-  --pipeline 3 \
-  "HASH_FROM_INSTRUCTOR"
-```
-
 Output:
+
 ```
-       5
-  [PASS] requires 'grep'
-  [PASS] forbids 'awk'
-  [PASS] pipeline has exactly 3 stage(s)
+[code]
+cat data.csv | grep "Merced" | wc -l
 
-Output: CORRECT
-Code:   CORRECT
+  ✓ requires 'grep'
+  ✓ requires 'wc'
+  ✓ forbids 'awk'
+  ✓ pipeline has exactly 3 stage(s)
+
+✓ CORRECT
 ```
 
-### Multi-line pipelines (heredoc pattern)
-
-For multi-line commands, assign to a variable using a heredoc:
+For multi-line pipelines, use a heredoc:
 
 ```bash
 MY_CODE=$(cat <<'EOF'
@@ -111,184 +267,210 @@ find . -name "*.csv" \
   | wc -l
 EOF
 )
-eval "$MY_CODE" | check_bash \
-  --code "$MY_CODE" \
-  --requires find \
-  --requires grep \
-  --requires wc \
-  --pipeline 3 \
-  "HASH_FROM_INSTRUCTOR"
+check_bash --code "$MY_CODE" \
+  --requires find --requires grep --requires wc \
+  --pipeline 3
 ```
 
 ---
 
-## Using check_bash in Quarto Notebooks
+### Pattern 5 — combined output + code
+
+The recommended pattern for most exercises. The student writes the command
+once as `MY_CODE` — it is both executed and structure-checked in one call:
+
+```bash
+MY_CODE='ls -la | grep ".csv" | wc -l'
+eval "$MY_CODE" | check_bash \
+  --code "$MY_CODE" \
+  --requires ls \
+  --requires grep \
+  --requires wc \
+  --forbid cat \
+  --pipeline 3 \
+  "<OUTPUT_HASH>"
+```
+
+Output (both correct):
+
+```
+       4
+  ✓ requires 'ls'
+  ✓ requires 'grep'
+  ✓ requires 'wc'
+  ✓ forbids 'cat'
+  ✓ pipeline has exactly 3 stage(s)
+
+Output: ✓ CORRECT
+Code:   ✓ CORRECT
+```
+
+Output (correct output, wrong structure):
+
+```
+       4
+  ✗ requires 'ls' — not found in code
+  ✓ requires 'grep'
+  ✓ requires 'wc'
+  ✓ forbids 'cat'
+  ✗ pipeline has 2 stage(s), expected exactly 3
+
+Output: ✓ CORRECT
+Code:   ✗ INCORRECT
+```
+
+---
+
+## Quarto / RStudio Integration
 
 ### Setup chunk
 
-Add the following to your notebook's setup chunk. The key setting is
-`comment = ""`, which removes the `##` prefix that knitr adds to bash output
-by default.
+Add to the `setup` chunk of every bash-using notebook:
 
-````r
+````markdown
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-  echo    = TRUE,
-  cache   = TRUE,
-  warning = FALSE,
-  message = FALSE,
-  collapse = TRUE,
-  comment = ""        # removes ## prefix from all chunk output
+  echo     = TRUE,
+  cache    = TRUE,
+  warning  = FALSE,
+  message  = FALSE,
+  collapse = FALSE,
+  comment  = "",     # removes ## prefix from bash chunk output
+  error    = TRUE    # prevents failed check_bash from killing the render
 )
+
+# Fix PATH for bash chunks on macOS (safe no-op on Linux/WSL2)
+homebrew_paths <- c("/opt/homebrew/bin", "/usr/local/bin")
+existing <- homebrew_paths[dir.exists(homebrew_paths)]
+if (length(existing) > 0)
+  Sys.setenv(PATH = paste(c(existing, Sys.getenv("PATH")), collapse = ":"))
 ```
 ````
 
-### Plain bash chunk (most demonstrations)
+### Bash version guard
 
-````bash
+Add this chunk immediately after setup in every bash-using notebook. It
+gives students a clear, actionable error if the wrong bash is being used:
+
+````markdown
+```{bash bash-check}
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+    echo "ERROR: bash $BASH_VERSION is too old."
+    echo "Fix: launch RStudio from your terminal: open -a RStudio"
+    echo "Or:  echo /opt/homebrew/bin | sudo tee /etc/paths.d/homebrew"
+    exit 1
+fi
+echo "✓ bash $BASH_VERSION — $(which bash)"
+```
+````
+
+### macOS PATH fix (one-time system setup)
+
+RStudio launched from the Dock inherits a minimal PATH from `launchd` that
+excludes `/opt/homebrew/bin`. The permanent fix uses `/etc/paths.d/`, which
+macOS's `path_helper` reads for all processes including GUI apps:
+
+```bash
+echo /opt/homebrew/bin | sudo tee /etc/paths.d/homebrew
+# Then restart your Mac
+```
+
+This is different from `~/.zshrc`, which only applies to interactive
+terminal sessions. After this fix, RStudio launched from the Dock and
+your terminal both use the same Homebrew bash 5.
+
+WSL2/Ubuntu users do not need this fix — Ubuntu ships bash 5.x and
+RStudio Server inherits the correct PATH automatically.
+
+### Example student notebook chunk
+
+````markdown
 ```{bash}
-MY_CODE='ls /tmp | grep "txt" | wc -l'
+#| label: ex-pipeline
+MY_CODE='cat /etc/hosts | grep "local" | wc -l'
 eval "$MY_CODE" | check_bash \
   --code "$MY_CODE" \
   --requires grep \
+  --requires wc \
   --pipeline 3 \
-  "HASH_FROM_INSTRUCTOR"
+  "YOUR_HASH_HERE"
 ```
 ````
 
-### Styled-bash chunk (stderr visually distinguished in rendered HTML)
-
-For demonstrations where you want stderr shown in red and stdout in green in
-the rendered HTML output, use the `styled-bash` custom knitr engine. Add this
-to your setup chunk alongside the standard options:
-
-````r
-```{r setup, include=FALSE}
-# ... standard options above ...
-
-knitr::knit_engines$set(`styled-bash` = function(options) {
-  code <- paste(options$code, collapse = "\n")
-  tmp_out <- tempfile(); tmp_err <- tempfile()
-  on.exit({ unlink(tmp_out); unlink(tmp_err) })
-  system2("bash", args = c("-c", shQuote(code)), stdout = tmp_out, stderr = tmp_err)
-  stdout_txt <- paste(readLines(tmp_out, warn = FALSE), collapse = "\n")
-  stderr_txt <- paste(readLines(tmp_err, warn = FALSE), collapse = "\n")
-  html_parts <- character(0)
-  if (nzchar(stdout_txt)) {
-    s <- gsub("^CORRECT$",   '<span style="color:#2e7d32;font-weight:bold">CORRECT</span>',   stdout_txt)
-    s <- gsub("^INCORRECT$", '<span style="color:#c62828;font-weight:bold">INCORRECT</span>', s)
-    html_parts <- c(html_parts, paste0('<pre style="background:#f8f8f8;border-left:3px solid #4caf50;padding:.5em 1em">', s, '</pre>'))
-  }
-  if (nzchar(stderr_txt)) {
-    html_parts <- c(html_parts, paste0('<pre style="background:#fff3f3;border-left:3px solid #e53935;color:#b71c1c;padding:.5em 1em"><strong>[stderr]</strong>\n', htmltools::htmlEscape(stderr_txt), '</pre>'))
-  }
-  knitr::engine_output(options, options$code, out = list(
-    structure(list(src = paste(html_parts, collapse = "\n")), class = c("knit_asis","knit_asis_url"))
-  ))
-})
-```
-````
-
-Then use it in chunks where stderr matters:
-
-````
-```{styled-bash}
-ls /nonexistent/path
-echo "This goes to stdout"
-```
-````
+A complete setup chunk template with all recommended options is in
+[`docs/DSC011_bash_setup_reference.qmd`](docs/DSC011_bash_setup_reference.qmd).
 
 ---
 
-## Instructor: Generating Hashes for KEY Notebooks
+## Instructor Key Generation
 
-### Output hash
+`--make-key` is an instructor-only flag. Students should never need it.
 
 ```bash
-# From a command:
-echo "expected answer" | check_bash --make-key
+# Output hash (pipe pattern)
+echo "expected output" | check_bash --make-key
 
-# From a captured value:
+# Output hash (capture pattern)
 answer=$(some_command)
 check_bash --make-key "$answer"
 
-# From a file:
+# File hash
 check_bash --file expected_output.csv --make-key
-```
 
-### Normalized hash (whitespace-tolerant)
-
-Use `-n` on both the instructor side and the student side:
-
-```bash
+# Normalized hash (student must also use -n)
 some_command | check_bash -n --make-key
-```
-
-Students then run:
-
-```bash
-some_command | check_bash -n "HASH"
-```
-
-### Code structure spec (no hash needed)
-
-Code structure checks don't require a hash — the flags themselves are the
-specification. Print a summary of the spec for pasting into a KEY notebook:
-
-```bash
-check_bash --code "$MY_CODE" \
-  --requires grep --forbid awk --pipeline 3 \
-  --make-key
 ```
 
 ---
 
 ## All Options
 
-| Flag | Short | Description |
-|---|---|---|
-| `--normalize` | `-n` | Strip/normalize whitespace before hashing |
-| `--file <path>` | `-f` | Hash raw bytes of a file |
-| `--make-key` | `-k` | Print hash instead of checking |
-| `--quiet` | `-q` | Suppress printing the answer value |
-| `--code <string>` | `-c` | Student code to analyze structurally |
-| `--requires <cmd>` | `-r` | Command that must appear (repeatable) |
-| `--forbid <cmd>` | `-F` | Command that must not appear (repeatable) |
-| `--pipeline <N>` | `-p` | Exactly N top-level pipeline stages |
-| `--pipeline-min <N>` | | At least N pipeline stages |
-| `--pipeline-max <N>` | | At most N pipeline stages |
-| `--requires-flag <f>` | | Option string that must appear (repeatable) |
-| `--forbid-flag <f>` | | Option string that must not appear (repeatable) |
-| `--help` | `-h` | Show help |
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--version` | `-V` | Print version and exit. |
+| `--normalize` | `-n` | Strip and normalize whitespace before hashing. |
+| `--quiet` | `-q` | Suppress printing the answer value. |
+| `--file <path>` | `-f` | Hash raw bytes of a file (always exact). |
+| `--code <string>` | `-c` | Student code string to analyze structurally. |
+| `--requires <cmd>` | `-r` | Command that must appear in `--code`. Repeatable. |
+| `--forbid <cmd>` | `-F` | Command that must NOT appear in `--code`. Repeatable. |
+| `--pipeline <N>` | `-p` | Code must have exactly N pipeline stages. |
+| `--pipeline-min <N>` | | Pipeline must have at least N stages. |
+| `--pipeline-max <N>` | | Pipeline must have at most N stages. |
+| `--requires-flag <f>` | | Flag/option that must appear (e.g. `"-r"`). Repeatable. |
+| `--forbid-flag <f>` | | Flag/option that must NOT appear. Repeatable. |
+| `--help` | `-h` | Show usage information. |
+| `--make-key` | `-k` | **(Instructor only)** Print SHA-256 hash for KEY notebooks. |
 
 ---
 
-## Running the Tests
+## Just Recipes
 
-```bash
-git clone https://github.com/dhard/dsc011-check-bash.git
-cd dsc011-check-bash
-bash test_check_bash.sh ./check_bash
-```
+From inside the cloned repo:
 
-The test suite covers: hash generation, pipe and capture patterns, normalize,
-file checking, code structure rules, pipeline counting (including subshell
-exclusion), combined mode, edge cases, injection resistance, performance, and
-cross-platform hash consistency.
+| Recipe | Description |
+|--------|-------------|
+| `just install` | Install to `~/bin` (no sudo) |
+| `just install-system` | Install to `/usr/local/bin` (sudo if needed) |
+| `just uninstall` | Remove from `~/bin` and/or `/usr/local/bin` |
+| `just test` | Run the full test suite (89 tests) |
+| `just check` | Run ShellCheck on all scripts (requires `shellcheck`) |
+| `just version` | Print current `check_bash` version |
 
 ---
 
-## Compatibility
+## Contributing
 
-| Platform | Shell | SHA-256 tool |
-|---|---|---|
-| macOS 13+ | bash 3.2+, zsh | `shasum -a 256` |
-| Ubuntu 20.04+ | bash 5+ | `sha256sum` |
-| WSL2 (Ubuntu) | bash 5+ | `sha256sum` |
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report bugs, suggest
+features, and submit pull requests.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).  
-Copyright © 2026 David Ardell, UC Merced.
+MIT License. Copyright (c) 2026 David Ardell.
+See [LICENSE](LICENSE) for full text.
+
+---
+
+*Developed for DSC 011: Computing and Statistical Programming, UC Merced.*
