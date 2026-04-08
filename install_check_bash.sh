@@ -150,9 +150,7 @@ _smoke_test() {
         echo "Smoke test:"
         echo "  $result"
         echo ""
-        echo "✓ Installation successful!"
-        echo ""
-        echo "$("$binary" --version) is ready. Open a new terminal or run:"
+        echo "✓ Installation successful! $("$binary" --version) is ready."
     else
         echo "WARNING: smoke test produced unexpected output." >&2
         echo "Please report at https://github.com/${REPO}/issues" >&2
@@ -171,12 +169,13 @@ if [[ "$MODE" == "user" ]]; then
     _smoke_test "$USER_DIR/$SCRIPT_NAME"
 
     # Determine which rc file was updated for the source hint
+    echo ""
     if [[ -n "${ZSH_VERSION:-}" ]]; then
-        echo "  source $HOME/.zshrc"
+        echo "Open a new terminal or run:  source $HOME/.zshrc"
     elif [[ "$(uname -s)" == "Darwin" ]]; then
-        echo "  source $HOME/.bash_profile"
+        echo "Open a new terminal or run:  source $HOME/.bash_profile"
     else
-        echo "  source $HOME/.bashrc"
+        echo "Open a new terminal or run:  source $HOME/.bashrc"
     fi
     exit 0
 fi
@@ -224,7 +223,7 @@ if [[ "$MODE" == "system" ]]; then
     fi
 
     _smoke_test "$SYSTEM_DIR/$SCRIPT_NAME"
-    echo "  (No shell restart needed — $SYSTEM_DIR is on PATH by default)"
+    echo "No shell restart needed — $SYSTEM_DIR is on PATH by default."
     exit 0
 fi
 
