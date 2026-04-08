@@ -372,6 +372,93 @@ expected substrings after this change.
 The performance timing test used nanosecond resolution (`%N`) which is
 Linux-only. Fixed by using second resolution (`%s`) throughout.
 
+**`(( REMOVED++ ))` exits 1 under `set -e` when result is zero**
+In bash, `(( expr ))` returns exit code 1 when the arithmetic result is
+zero. So `(( REMOVED++ ))` when `REMOVED=0` evaluates to 0 (the
+pre-increment value), exits 1, and `set -euo pipefail` kills the script —
+even though the increment itself succeeded. This surfaced in the uninstall
+mode of `install_check_bash.sh` when exactly one location was removed,
+leaving `REMOVED=1` after the first increment but crashing on the second
+`(( REMOVED++ ))` call that never ran because the `if` branch wasn't taken.
+
+The fix is to always use `VAR=$(( VAR + 1 ))` instead of `(( VAR++ ))` in
+scripts with `set -e`. Command substitution always exits 0 regardless of
+the arithmetic result:
+
+```bash
+# Dangerous under set -e:
+(( REMOVED++ ))
+
+# Safe:
+REMOVED=$(( REMOVED + 1 ))
+```
+
+This applies to any arithmetic increment in a `set -e` script. The pattern
+`(( var++ ))` or `(( var += 1 ))` should be avoided entirely in favor of
+`var=$(( var + 1 ))`.
+
+---
+
+## Dead Ends — Do Not Re-Explore Without Reading This First
+
+### styled-bash custom knitr engine
+
+A custom knitr engine called `styled-bash` was developed to render bash
+chunk stdout with a green left border and stderr with a red left border in
+Quarto HTML output. The engine was abandoned after extensive debugging
+because no approach to returning raw HTML from a custom knitr engine worked
+reliably in Quarto.
+
+**What was tried and why each failed:**
+
+- `knitr::engine_output(options, code, out)` with `out` as an HTML string —
+  Quarto escapes the HTML tags, displaying them as literal text
+- `knitr::asis_output(html_out)` — same result, tags displayed literally
+- `knitr::engine_output(options, code, htmltools::HTML(html_out))` —
+  no output at all; Quarto silently drops the content
+- Running the chunk interactively in RStudio correctly produced the HTML
+  string, confirming the engine logic was correct — the problem is
+  entirely in how Quarto's knitr integration handles custom engine output
+
+**The right starting point if revisiting this:**
+
+Use `results='asis'` in a regular `{r}` chunk calling `system2()` directly.
+This is the one mechanism that reliably passes raw HTML through Quarto:
+
+```r
+```{r demo-stderr, results='asis'}
+tmp_out <- tempfile()
+tmp_err <- tempfile()
+system2("bash",
+  args = c("-c", shQuote('ls /nonexistent; echo "stdout here"')),
+  stdout = tmp_out, stderr = tmp_err
+)
+stdout_txt <- paste(readLines(tmp_out, warn = FALSE), collapse = "\n")
+stderr_txt <- paste(readLines(tmp_err, warn = FALSE), collapse = "\n")
+if (nzchar(stdout_txt))
+  cat(paste0('<pre class="stdout">',
+             htmltools::htmlEscape(stdout_txt), '</pre>\n'))
+if (nzchar(stderr_txt))
+  cat(paste0('<pre class="stderr"><strong>[stderr]</strong>\n',
+             htmltools::htmlEscape(stderr_txt), '</pre>\n'))
+```
+```
+
+The downside is that students see R code rather than bash code. Work around
+this by pairing a `{bash}` chunk with `eval=FALSE` (to show the code) with
+a `{r}` chunk with `echo=FALSE` (to produce the styled output).
+
+Also check `packageVersion("knitr")` before revisiting — knitr 1.45+
+introduced new output hook mechanisms that may make a custom engine approach
+viable. The exploration here was done with whatever knitr version ships with
+Quarto on macOS Sequoia in early 2026.
+
+**Current state:** The CSS for `.stdout`, `.stderr`, `.check-correct`, and
+`.check-incorrect` has been removed from `docs/DSC011_bash_setup_reference.qmd`
+along with the engine definition. Plain `{bash}` chunks with `comment = ""`
+provide clean output and `✓`/`✗` emoji are visually distinctive enough
+without additional styling.
+
 ---
 
 ## Relationship to the R System
@@ -382,6 +469,9 @@ separate repository. The two systems share:
 - The "enter once, check twice" design principle
 - `✓ CORRECT` / `✗ INCORRECT` as the result vocabulary
 
+They do **not** share hash values — R's `digest()` serializes R objects
+rather than raw strings, so hashes are not portable across systems.
+This is intentional and expected.
 
 ---
 
@@ -397,6 +487,10 @@ The installer:
 - Makes it executable
 - Adds `~/bin` to PATH in the appropriate shell rc file
 - Runs a smoke test to verify the install
+
+**Private repos will not work** with this installer. `raw.githubusercontent.com`
+requires authentication for private repos, and `curl`/`wget` cannot
+authenticate without a token. The repo must be public.
 
 The installer was end-to-end tested on Darwin arm64 (macOS Sequoia,
 bash 5.3.9) during pre-release. The installed copy passed all 89 tests.

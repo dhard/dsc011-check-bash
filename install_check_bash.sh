@@ -239,7 +239,7 @@ if [[ "$MODE" == "uninstall" ]]; then
         rm -f "$USER_DIR/$SCRIPT_NAME"
         echo "Removed: $USER_DIR/$SCRIPT_NAME"
         _remove_from_path "$USER_DIR"
-        (( REMOVED++ ))
+        REMOVED=$(( REMOVED + 1 ))
     fi
 
     # System install
@@ -250,7 +250,7 @@ if [[ "$MODE" == "uninstall" ]]; then
             sudo rm -f "$SYSTEM_DIR/$SCRIPT_NAME"
         fi
         echo "Removed: $SYSTEM_DIR/$SCRIPT_NAME"
-        (( REMOVED++ ))
+        REMOVED=$(( REMOVED + 1 ))
     fi
 
     if [[ "$REMOVED" -eq 0 ]]; then
