@@ -62,7 +62,7 @@
 #                          Students should never need this flag.
 # =============================================================================
 
-VERSION="2.1"
+VERSION="2.2"
 
 set -euo pipefail
 
